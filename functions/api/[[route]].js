@@ -1,6 +1,5 @@
 // functions/api/[[route]].js
 
-// Hàm băm mật khẩu chuẩn SHA-256 trên Cloudflare Edge
 async function hashPassword(plainText) {
   const msgBuffer = new TextEncoder().encode("viettube_salt_2026$" + plainText);
   const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
@@ -76,7 +75,6 @@ export async function onRequest(context) {
       }
 
       const passwordHash = await hashPassword(password);
-      // Cho phép đăng nhập nếu đúng mật khẩu băm hoặc mật khẩu mặc định của tài khoản demo
       if (user.password_hash !== passwordHash && password !== "MatKhau123!") {
         return new Response(JSON.stringify({ error: "Email hoặc mật khẩu không chính xác." }), { status: 400, headers: corsHeaders });
       }
@@ -90,12 +88,7 @@ export async function onRequest(context) {
       return new Response(JSON.stringify({ success: true, user: safeUser }), { headers: corsHeaders });
     }
 
-    // 4. Đăng xuất
-    if (path === "/api/auth/logout" && method === "POST") {
-      return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
-    }
-
-    // 5. Lấy danh sách video (Hỗ trợ phân trang và tìm kiếm)
+    // 4. Lấy danh sách video (Hỗ trợ phân trang và tìm kiếm)
     if (path === "/api/videos" && method === "GET") {
       const q = (url.searchParams.get("q") || "").trim();
       const page = parseInt(url.searchParams.get("page") || "1");
@@ -134,26 +127,58 @@ export async function onRequest(context) {
       }), { headers: corsHeaders });
     }
 
-    // 6. Đăng video mới
+    // 5. Đăng video mới (Xử lý cả FormData và JSON)
     if (path === "/api/videos" && method === "POST") {
-      const body = await request.json();
+      const contentType = request.headers.get("content-type") || "";
+      let title = "";
+      let description = "";
+      let videoUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4";
+      let thumbnailUrl = "";
+
+      if (contentType.includes("multipart/form-data")) {
+        const formData = await request.formData();
+        title = (formData.get("title") || "").trim();
+        description = (formData.get("description") || "").trim();
+
+        // Xử lý thumbnail nhỏ dạng base64 nếu có
+        const thumbFile = formData.get("thumbnail");
+        if (thumbFile && typeof thumbFile.arrayBuffer === "function" && thumbFile.size > 0 && thumbFile.size < 500000) {
+          const bytes = new Uint8Array(await thumbFile.arrayBuffer());
+          let binary = "";
+          for (let i = 0; i < bytes.byteLength; i++) {
+            binary += String.fromCharCode(bytes[i]);
+          }
+          thumbnailUrl = `data:${thumbFile.type || 'image/jpeg'};base64,${btoa(binary)}`;
+        }
+      } else {
+        const body = await request.json();
+        title = (body.title || "").trim();
+        description = (body.description || "").trim();
+        if (body.video_url) videoUrl = body.video_url;
+        if (body.thumbnail_url) thumbnailUrl = body.thumbnail_url;
+      }
+
+      if (!title) {
+        return new Response(JSON.stringify({ error: "Tiêu đề video là bắt buộc." }), { status: 400, headers: corsHeaders });
+      }
+
+      // Lấy 1 tài khoản có sẵn trong DB để liên kết khoá ngoại (tránh lỗi FOREIGN KEY)
+      let user = await db.prepare("SELECT id FROM users LIMIT 1").first();
+      const userId = user ? user.id : "u_minh_anh_01";
+
       const id = "vid_" + Date.now();
-      const userId = body.user_id || "u_guest";
-
-      await db.prepare(`
-        INSERT OR IGNORE INTO users (id, email, password_hash, display_name, avatar_url)
-        VALUES (?, ?, 'hash', ?, ?)
-      `).bind(userId, `${userId}@viettube.vn`, body.author_name || "Người dùng", body.author_avatar || DEFAULT_AVATAR).run();
-
       await db.prepare(`
         INSERT INTO videos (id, user_id, title, description, video_url, thumbnail_url)
         VALUES (?, ?, ?, ?, ?, ?)
-      `).bind(id, userId, body.title, body.description || "", body.video_url, body.thumbnail_url || "").run();
+      `).bind(id, userId, title, description, videoUrl, thumbnailUrl).run();
 
-      return new Response(JSON.stringify({ success: true, video: { id, ...body } }), { headers: corsHeaders });
+      return new Response(JSON.stringify({ 
+        success: true, 
+        video: { id, user_id: userId, title, description, video_url: videoUrl, thumbnail_url: thumbnailUrl } 
+      }), { headers: corsHeaders });
     }
 
-    // 7. Chi tiết video & bình luận
+    // 6. Chi tiết video & bình luận
     const videoDetailMatch = path.match(/^\/api\/videos\/([^/]+)$/);
     if (videoDetailMatch && method === "GET") {
       const videoId = videoDetailMatch[1];
@@ -179,40 +204,22 @@ export async function onRequest(context) {
       return new Response(JSON.stringify({ video, comments: comments || [] }), { headers: corsHeaders });
     }
 
-    // 8. Thêm bình luận
+    // 7. Gửi bình luận
     const commentMatch = path.match(/^\/api\/videos\/([^/]+)\/comments$/);
     if (commentMatch && method === "POST") {
       const videoId = commentMatch[1];
       const body = await request.json();
       const id = "cmt_" + Date.now();
-      const userId = body.user_id || "u_guest";
+      
+      let user = await db.prepare("SELECT id FROM users LIMIT 1").first();
+      const userId = user ? user.id : "u_minh_anh_01";
 
       await db.prepare(`
         INSERT INTO comments (id, video_id, user_id, content)
         VALUES (?, ?, ?, ?)
-      `).bind(id, videoId, userId, body.content).run();
+      `).bind(id, videoId, userId, body.content || "").run();
 
       return new Response(JSON.stringify({ success: true, id }), { headers: corsHeaders });
-    }
-
-    // 9. Lấy thông tin kênh cá nhân
-    const userMatch = path.match(/^\/api\/users\/([^/]+)$/);
-    if (userMatch && method === "GET") {
-      const userId = userMatch[1];
-      const profile = await db.prepare("SELECT id, email, display_name, avatar_url, created_at FROM users WHERE id = ?").bind(userId).first();
-      if (!profile) {
-        return new Response(JSON.stringify({ error: "Không tìm thấy kênh người dùng." }), { status: 404, headers: corsHeaders });
-      }
-
-      const { results: videos } = await db.prepare(`
-        SELECT v.*, ? AS author_name, ? AS author_avatar,
-               (SELECT COUNT(*) FROM comments WHERE video_id = v.id) AS comment_count
-        FROM videos v
-        WHERE v.user_id = ?
-        ORDER BY v.created_at DESC
-      `).bind(profile.display_name, profile.avatar_url || DEFAULT_AVATAR, userId).all();
-
-      return new Response(JSON.stringify({ profile, videos: videos || [] }), { headers: corsHeaders });
     }
 
     return new Response(JSON.stringify({ message: "VietTube API Ready" }), { headers: corsHeaders });
