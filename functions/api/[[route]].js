@@ -1,8 +1,8 @@
 // =========================================================================
-// 1. CẤU HÌNH THÔNG TIN SUPABASE CỦA BẠN (ĐIỀN CHÍNH XÁC VÀO 2 DÒNG NÀY)
+// 1. CẤU HÌNH SUPABASE (HÃY ĐIỀN CHÍNH XÁC VÀO 2 DÒNG NÀY)
 // =========================================================================
-const SUPABASE_URL = "https://oykzzwomigdgkuqezofj.supabase.co"; // Thay URL dự án Supabase của bạn
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im95a3p6d29taWdkZ2t1cWV6b2ZqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI5MjM1NzYsImV4cCI6MjEwODQ5OTU3Nn0.VYMUaL6_5Oc25_goptWvVKIron-9KxEs4XIKzt7WHvE";               // Thay mã anon public key của bạn
+const SUPABASE_URL = "https://oykzzwomigdgkuqezofj.supabase.co"; // URL Supabase của bạn
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im95a3p6d29taWdkZ2t1cWV6b2ZqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI5MjM1NzYsImV4cCI6MjEwODQ5OTU3Nn0.VYMUaL6_5Oc25_goptWvVKIron-9KxEs4XIKzt7WHvE";               // Mã anon public key của bạn
 
 // =========================================================================
 // 2. CÁC HÀM TIỆN ÍCH HỆ THỐNG
@@ -12,6 +12,13 @@ async function hashPassword(plainText) {
   const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   return "pbkdf2_sha256$" + hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Đọc ID tài khoản đang đăng nhập từ Cookie của trình duyệt
+function getUserIdFromCookie(request) {
+  const cookieHeader = request.headers.get("Cookie") || "";
+  const match = cookieHeader.match(/viettube_session=([^;]+)/);
+  return match ? decodeURIComponent(match[1].trim()) : null;
 }
 
 const DEFAULT_AVATAR = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjAgMTIwIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEyMCI+CiAgPGRlZnM+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9ImF2IiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iI2VmNDQ0NCIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiNlYzQ4OTkiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgPC9kZWZzPgogIDxyZWN0IHdpZHRoPSIxMjAiIGhlaWdodD0iMTIwIiByeD0iNjAiIGZpbGw9InVybCgjYXYpIi8+CiAgPGNpcmNsZSBjeD0iNjAiIGN5PSI0NCIgcj0iMjAiIGZpbGw9IiNmZmZmZmYiIG9wYWNpdHk9IjAuOTUiLz4KICA8cGF0aCBkPSJNMjYgMTAyIEMyNiA3OCA5NCA3OCA5NCAxMDIiIGZpbGw9IiNmZmZmZmYiIG9wYWNpdHk9IjAuOTUiLz4KPC9zdmc+";
@@ -36,15 +43,24 @@ export async function onRequest(context) {
 
   try {
     // -------------------------------------------------------------
-    // A. XÁC THỰC TÀI KHOẢN (AUTH)
+    // A. XÁC THỰC TÀI KHOẢN (AUTH & PERSISTENT SESSION)
     // -------------------------------------------------------------
+    // 1. Kiểm tra session khi tải lại trang web (F5)
     if (path === "/api/auth/me" && method === "GET") {
+      const loggedInId = getUserIdFromCookie(request);
+      let user = null;
+
+      if (loggedInId) {
+        user = await db.prepare("SELECT id, email, display_name, avatar_url FROM users WHERE id = ?").bind(loggedInId).first();
+      }
+
       return new Response(JSON.stringify({ 
-        user: null, 
+        user: user || null, 
         config: { max_video_size_mb: 200, max_image_size_mb: 5 } 
       }), { headers: corsHeaders });
     }
 
+    // 2. Đăng ký tài khoản mới
     if (path === "/api/auth/register" && method === "POST") {
       const body = await request.json();
       const email = (body.email || "").trim().toLowerCase();
@@ -68,9 +84,15 @@ export async function onRequest(context) {
       `).bind(id, email, passwordHash, displayName, DEFAULT_AVATAR).run();
 
       const user = { id, email, display_name: displayName, avatar_url: DEFAULT_AVATAR };
-      return new Response(JSON.stringify({ success: true, user }), { headers: corsHeaders });
+      
+      // Tạo cookie lưu đăng nhập 30 ngày
+      const responseHeaders = new Headers(corsHeaders);
+      responseHeaders.set("Set-Cookie", `viettube_session=${id}; Path=/; Max-Age=2592000; SameSite=Lax; Secure`);
+
+      return new Response(JSON.stringify({ success: true, user }), { headers: responseHeaders });
     }
 
+    // 3. Đăng nhập
     if (path === "/api/auth/login" && method === "POST") {
       const body = await request.json();
       const email = (body.email || "").trim().toLowerCase();
@@ -92,15 +114,23 @@ export async function onRequest(context) {
         display_name: user.display_name,
         avatar_url: user.avatar_url || DEFAULT_AVATAR,
       };
-      return new Response(JSON.stringify({ success: true, user: safeUser }), { headers: corsHeaders });
+
+      // Tạo cookie lưu đăng nhập 30 ngày
+      const responseHeaders = new Headers(corsHeaders);
+      responseHeaders.set("Set-Cookie", `viettube_session=${user.id}; Path=/; Max-Age=2592000; SameSite=Lax; Secure`);
+
+      return new Response(JSON.stringify({ success: true, user: safeUser }), { headers: responseHeaders });
     }
 
+    // 4. Đăng xuất
     if (path === "/api/auth/logout" && method === "POST") {
-      return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
+      const responseHeaders = new Headers(corsHeaders);
+      responseHeaders.set("Set-Cookie", "viettube_session=; Path=/; Max-Age=0; SameSite=Lax; Secure");
+      return new Response(JSON.stringify({ success: true }), { headers: responseHeaders });
     }
 
     // -------------------------------------------------------------
-    // B. VIDEO: DANH SÁCH & ĐĂNG MỚI
+    // B. VIDEO: DANH SÁCH & ĐĂNG MỚI (LƯU ĐÚNG TÁC GIẢ)
     // -------------------------------------------------------------
     if (path === "/api/videos" && method === "GET") {
       const q = (url.searchParams.get("q") || "").trim();
@@ -141,6 +171,17 @@ export async function onRequest(context) {
     }
 
     if (path === "/api/videos" && method === "POST") {
+      // 1. Xác định tài khoản đang đăng nhập
+      const loggedInId = getUserIdFromCookie(request);
+      if (!loggedInId) {
+        return new Response(JSON.stringify({ error: "Bạn cần đăng nhập để đăng video." }), { status: 401, headers: corsHeaders });
+      }
+
+      const currentUser = await db.prepare("SELECT id, display_name, avatar_url FROM users WHERE id = ?").bind(loggedInId).first();
+      if (!currentUser) {
+        return new Response(JSON.stringify({ error: "Tài khoản không tồn tại hoặc phiên hết hạn." }), { status: 401, headers: corsHeaders });
+      }
+
       let title = "";
       let description = "";
       let videoUrl = "";
@@ -158,15 +199,16 @@ export async function onRequest(context) {
           return new Response(JSON.stringify({ error: "Chưa chọn file video để tải lên." }), { status: 400, headers: corsHeaders });
         }
 
-        // Tải thẳng video lên Supabase Storage qua luồng Stream
+        // Tự động chuẩn hóa link Supabase, loại bỏ /rest/v1 thừa nếu có
+        const cleanBaseUrl = SUPABASE_URL.trim().replace(/\/rest\/v1\/?$/, "").replace(/\/+$/, "");
         const ext = videoFile.name ? videoFile.name.split('.').pop() : 'mp4';
         const fileName = `vid_${Date.now()}.${ext}`;
 
-        const uploadRes = await fetch(`${SUPABASE_URL}/storage/v1/object/videos/${fileName}`, {
+        const uploadRes = await fetch(`${cleanBaseUrl}/storage/v1/object/videos/${fileName}`, {
           method: "POST",
           headers: {
-            "Authorization": `Bearer ${SUPABASE_KEY}`,
-            "apikey": SUPABASE_KEY,
+            "Authorization": `Bearer ${SUPABASE_KEY.trim()}`,
+            "apikey": SUPABASE_KEY.trim(),
             "Content-Type": videoFile.type || "video/mp4"
           },
           body: videoFile.stream(),
@@ -175,11 +217,10 @@ export async function onRequest(context) {
 
         if (!uploadRes.ok) {
           const errDetail = await uploadRes.text();
-          return new Response(JSON.stringify({ error: `Lỗi Supabase Storage (${uploadRes.status}): ${errDetail}` }), { status: 400, headers: corsHeaders });
+          return new Response(JSON.stringify({ error: `Lỗi Supabase (${uploadRes.status}): ${errDetail}` }), { status: 400, headers: corsHeaders });
         }
 
-        // Link phát video trực tiếp công khai từ Supabase
-        videoUrl = `${SUPABASE_URL}/storage/v1/object/public/videos/${fileName}`;
+        videoUrl = `${cleanBaseUrl}/storage/v1/object/public/videos/${fileName}`;
 
         // Xử lý ảnh thumbnail nếu có
         const thumbFile = formData.get("thumbnail");
@@ -197,18 +238,16 @@ export async function onRequest(context) {
         return new Response(JSON.stringify({ error: "Tiêu đề video là bắt buộc." }), { status: 400, headers: corsHeaders });
       }
 
-      let user = await db.prepare("SELECT id FROM users LIMIT 1").first();
-      const userId = user ? user.id : "u_minh_anh_01";
       const id = "vid_" + Date.now();
-
+      // Lưu video với đúng ID của người đăng hiện tại
       await db.prepare(`
         INSERT INTO videos (id, user_id, title, description, video_url, thumbnail_url)
         VALUES (?, ?, ?, ?, ?, ?)
-      `).bind(id, userId, title, description, videoUrl, thumbnailUrl).run();
+      `).bind(id, currentUser.id, title, description, videoUrl, thumbnailUrl).run();
 
       return new Response(JSON.stringify({ 
         success: true, 
-        video: { id, user_id: userId, title, description, video_url: videoUrl, thumbnail_url: thumbnailUrl } 
+        video: { id, user_id: currentUser.id, title, description, video_url: videoUrl, thumbnail_url: thumbnailUrl } 
       }), { headers: corsHeaders });
     }
 
@@ -219,7 +258,6 @@ export async function onRequest(context) {
     if (videoDetailMatch) {
       const videoId = videoDetailMatch[1];
 
-      // 1. Xem chi tiết video
       if (method === "GET") {
         const video = await db.prepare(`
           SELECT v.*, u.display_name AS author_name, u.avatar_url AS author_avatar
@@ -243,36 +281,29 @@ export async function onRequest(context) {
         return new Response(JSON.stringify({ video, comments: comments || [] }), { headers: corsHeaders });
       }
 
-      // 2. Chỉnh sửa video (PUT)
-      if (method === "PUT") {
-        const formData = await request.formData();
-        const title = (formData.get("title") || "").trim();
-        const description = (formData.get("description") || "").trim();
-
-        await db.prepare(`
-          UPDATE videos SET title = ?, description = ? WHERE id = ?
-        `).bind(title, description, videoId).run();
-
-        return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
-      }
-
-      // 3. Xóa video (DELETE) - Xử lý dứt điểm lỗi không xóa được
       if (method === "DELETE") {
-        // Tìm link video để xóa luôn file trên Supabase
-        const video = await db.prepare("SELECT video_url FROM videos WHERE id = ?").bind(videoId).first();
-        if (video && video.video_url && video.video_url.includes("/storage/v1/object/public/videos/")) {
-          const fileName = video.video_url.split("/videos/").pop();
-          try {
-            await fetch(`${SUPABASE_URL}/storage/v1/object/videos/${fileName}`, {
-              method: "DELETE",
-              headers: { "Authorization": `Bearer ${SUPABASE_KEY}`, "apikey": SUPABASE_KEY }
-            });
-          } catch (e) {
-            // Tiếp tục xóa trong D1 dù file storage có xóa được hay không
-          }
+        const loggedInId = getUserIdFromCookie(request);
+        const video = await db.prepare("SELECT user_id, video_url FROM videos WHERE id = ?").bind(videoId).first();
+        
+        if (!video) {
+          return new Response(JSON.stringify({ error: "Không tìm thấy video." }), { status: 404, headers: corsHeaders });
+        }
+        if (!loggedInId || video.user_id !== loggedInId) {
+          return new Response(JSON.stringify({ error: "Bạn không có quyền xóa video này." }), { status: 403, headers: corsHeaders });
         }
 
-        // Xóa bình luận liên quan và xóa video trong D1
+        // Xóa file trên Supabase nếu có
+        if (video.video_url && video.video_url.includes("/storage/v1/object/public/videos/")) {
+          const fileName = video.video_url.split("/videos/").pop();
+          const cleanBaseUrl = SUPABASE_URL.trim().replace(/\/rest\/v1\/?$/, "").replace(/\/+$/, "");
+          try {
+            await fetch(`${cleanBaseUrl}/storage/v1/object/videos/${fileName}`, {
+              method: "DELETE",
+              headers: { "Authorization": `Bearer ${SUPABASE_KEY.trim()}`, "apikey": SUPABASE_KEY.trim() }
+            });
+          } catch (e) {}
+        }
+
         await db.prepare("DELETE FROM comments WHERE video_id = ?").bind(videoId).run();
         await db.prepare("DELETE FROM videos WHERE id = ?").bind(videoId).run();
 
@@ -281,34 +312,46 @@ export async function onRequest(context) {
     }
 
     // -------------------------------------------------------------
-    // D. BÌNH LUẬN & XÓA BÌNH LUẬN
+    // D. BÌNH LUẬN & XÓA BÌNH LUẬN (GÁN ĐÚNG NGƯỜI BÌNH LUẬN)
     // -------------------------------------------------------------
     const commentPostMatch = path.match(/^\/api\/videos\/([^/]+)\/comments$/);
     if (commentPostMatch && method === "POST") {
+      const loggedInId = getUserIdFromCookie(request);
+      if (!loggedInId) {
+        return new Response(JSON.stringify({ error: "Bạn cần đăng nhập để bình luận." }), { status: 401, headers: corsHeaders });
+      }
+
       const videoId = commentPostMatch[1];
       const body = await request.json();
       const id = "cmt_" + Date.now();
-      
-      let user = await db.prepare("SELECT id FROM users LIMIT 1").first();
-      const userId = user ? user.id : "u_minh_anh_01";
 
       await db.prepare(`
         INSERT INTO comments (id, video_id, user_id, content)
         VALUES (?, ?, ?, ?)
-      `).bind(id, videoId, userId, body.content || "").run();
+      `).bind(id, videoId, loggedInId, body.content || "").run();
 
       return new Response(JSON.stringify({ success: true, id }), { headers: corsHeaders });
     }
 
     const commentDeleteMatch = path.match(/^\/api\/comments\/([^/]+)$/);
     if (commentDeleteMatch && method === "DELETE") {
+      const loggedInId = getUserIdFromCookie(request);
       const commentId = commentDeleteMatch[1];
+      const c = await db.prepare("SELECT user_id FROM comments WHERE id = ?").bind(commentId).first();
+      
+      if (!c) {
+        return new Response(JSON.stringify({ error: "Không tìm thấy bình luận." }), { status: 404, headers: corsHeaders });
+      }
+      if (!loggedInId || c.user_id !== loggedInId) {
+        return new Response(JSON.stringify({ error: "Bạn không có quyền xóa bình luận này." }), { status: 403, headers: corsHeaders });
+      }
+
       await db.prepare("DELETE FROM comments WHERE id = ?").bind(commentId).run();
       return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
     }
 
     // -------------------------------------------------------------
-    // E. KÊNH CÁ NHÂN & HỒ SƠ
+    // E. TRANG KÊNH CÁ NHÂN
     // -------------------------------------------------------------
     const userMatch = path.match(/^\/api\/users\/([^/]+)$/);
     if (userMatch && method === "GET") {
@@ -329,18 +372,8 @@ export async function onRequest(context) {
       return new Response(JSON.stringify({ profile, videos: videos || [] }), { headers: corsHeaders });
     }
 
-    if (path === "/api/profile" && method === "PUT") {
-      const formData = await request.formData();
-      const displayName = (formData.get("display_name") || "").trim();
-      let user = await db.prepare("SELECT id FROM users LIMIT 1").first();
-      if (user) {
-        await db.prepare("UPDATE users SET display_name = ? WHERE id = ?").bind(displayName, user.id).run();
-      }
-      return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
-    }
-
     return new Response(JSON.stringify({ message: "VietTube API Ready" }), { headers: corsHeaders });
   } catch (err) {
     return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
   }
-}
+        }
