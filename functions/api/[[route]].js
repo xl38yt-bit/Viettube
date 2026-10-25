@@ -1,8 +1,8 @@
 // =========================================================================
-// 1. CẤU HÌNH SUPABASE (HÃY ĐIỀN CHÍNH XÁC VÀO 2 DÒNG NÀY)
+// 1. CẤU HÌNH TELEGRAM BOT (ĐIỀN CHÍNH XÁC 2 THÔNG TIN VÀO ĐÂY)
 // =========================================================================
-const SUPABASE_URL = "https://oykzzwomigdgkuqezofj.supabase.co"; // URL Supabase của bạn
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im95a3p6d29taWdkZ2t1cWV6b2ZqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI5MjM1NzYsImV4cCI6MjEwODQ5OTU3Nn0.VYMUaL6_5Oc25_goptWvVKIron-9KxEs4XIKzt7WHvE";               // Mã anon public key của bạn
+const TELEGRAM_BOT_TOKEN = "7123456789:AAFlk_xxxxxxxxxxxxxxxxxxxxxx"; // Thay Token của bạn
+const TELEGRAM_CHAT_ID = "-1002345678901";                            // Thay Chat ID của bạn
 
 // =========================================================================
 // 2. CÁC HÀM TIỆN ÍCH HỆ THỐNG
@@ -14,7 +14,6 @@ async function hashPassword(plainText) {
   return "pbkdf2_sha256$" + hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-// Đọc ID tài khoản đang đăng nhập từ Cookie của trình duyệt
 function getUserIdFromCookie(request) {
   const cookieHeader = request.headers.get("Cookie") || "";
   const match = cookieHeader.match(/viettube_session=([^;]+)/);
@@ -43,24 +42,20 @@ export async function onRequest(context) {
 
   try {
     // -------------------------------------------------------------
-    // A. XÁC THỰC TÀI KHOẢN (AUTH & PERSISTENT SESSION)
+    // A. XÁC THỰC TÀI KHOẢN & LƯU PHIÊN ĐĂNG NHẬP (COOKIE)
     // -------------------------------------------------------------
-    // 1. Kiểm tra session khi tải lại trang web (F5)
     if (path === "/api/auth/me" && method === "GET") {
       const loggedInId = getUserIdFromCookie(request);
       let user = null;
-
       if (loggedInId) {
         user = await db.prepare("SELECT id, email, display_name, avatar_url FROM users WHERE id = ?").bind(loggedInId).first();
       }
-
       return new Response(JSON.stringify({ 
         user: user || null, 
-        config: { max_video_size_mb: 200, max_image_size_mb: 5 } 
+        config: { max_video_size_mb: 50, max_image_size_mb: 5 } 
       }), { headers: corsHeaders });
     }
 
-    // 2. Đăng ký tài khoản mới
     if (path === "/api/auth/register" && method === "POST") {
       const body = await request.json();
       const email = (body.email || "").trim().toLowerCase();
@@ -84,15 +79,12 @@ export async function onRequest(context) {
       `).bind(id, email, passwordHash, displayName, DEFAULT_AVATAR).run();
 
       const user = { id, email, display_name: displayName, avatar_url: DEFAULT_AVATAR };
-      
-      // Tạo cookie lưu đăng nhập 30 ngày
       const responseHeaders = new Headers(corsHeaders);
       responseHeaders.set("Set-Cookie", `viettube_session=${id}; Path=/; Max-Age=2592000; SameSite=Lax; Secure`);
 
       return new Response(JSON.stringify({ success: true, user }), { headers: responseHeaders });
     }
 
-    // 3. Đăng nhập
     if (path === "/api/auth/login" && method === "POST") {
       const body = await request.json();
       const email = (body.email || "").trim().toLowerCase();
@@ -115,14 +107,12 @@ export async function onRequest(context) {
         avatar_url: user.avatar_url || DEFAULT_AVATAR,
       };
 
-      // Tạo cookie lưu đăng nhập 30 ngày
       const responseHeaders = new Headers(corsHeaders);
       responseHeaders.set("Set-Cookie", `viettube_session=${user.id}; Path=/; Max-Age=2592000; SameSite=Lax; Secure`);
 
       return new Response(JSON.stringify({ success: true, user: safeUser }), { headers: responseHeaders });
     }
 
-    // 4. Đăng xuất
     if (path === "/api/auth/logout" && method === "POST") {
       const responseHeaders = new Headers(corsHeaders);
       responseHeaders.set("Set-Cookie", "viettube_session=; Path=/; Max-Age=0; SameSite=Lax; Secure");
@@ -130,7 +120,41 @@ export async function onRequest(context) {
     }
 
     // -------------------------------------------------------------
-    // B. VIDEO: DANH SÁCH & ĐĂNG MỚI (LƯU ĐÚNG TÁC GIẢ)
+    // B. VIDEO STREAM PROXY (KÉO VIDEO TỪ TELEGRAM VỀ TRÌNH PHÁT)
+    // -------------------------------------------------------------
+    const streamMatch = path.match(/^\/api\/stream\/([^/]+)$/);
+    if (streamMatch && method === "GET") {
+      const fileId = streamMatch[1];
+      
+      // 1. Hỏi Telegram đường dẫn file
+      const getFileRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getFile?file_id=${fileId}`);
+      const fileData = await getFileRes.json();
+      
+      if (!fileData.ok) {
+        return new Response("Không tìm thấy file trên máy chủ Telegram.", { status: 404 });
+      }
+
+      const filePath = fileData.result.file_path;
+      const downloadUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${filePath}`;
+
+      // 2. Kéo luồng stream về và hỗ trợ Range (tua video)
+      const range = request.headers.get("range");
+      const videoFetch = await fetch(downloadUrl, {
+        headers: range ? { "Range": range } : {}
+      });
+
+      const responseHeaders = new Headers(videoFetch.headers);
+      responseHeaders.set("Access-Control-Allow-Origin", "*");
+      responseHeaders.set("Content-Type", "video/mp4");
+
+      return new Response(videoFetch.body, {
+        status: videoFetch.status,
+        headers: responseHeaders
+      });
+    }
+
+    // -------------------------------------------------------------
+    // C. VIDEO: LẤY DANH SÁCH & ĐĂNG MỚI (LƯU VÀO TELEGRAM)
     // -------------------------------------------------------------
     if (path === "/api/videos" && method === "GET") {
       const q = (url.searchParams.get("q") || "").trim();
@@ -171,13 +195,12 @@ export async function onRequest(context) {
     }
 
     if (path === "/api/videos" && method === "POST") {
-      // 1. Xác định tài khoản đang đăng nhập
       const loggedInId = getUserIdFromCookie(request);
       if (!loggedInId) {
         return new Response(JSON.stringify({ error: "Bạn cần đăng nhập để đăng video." }), { status: 401, headers: corsHeaders });
       }
 
-      const currentUser = await db.prepare("SELECT id, display_name, avatar_url FROM users WHERE id = ?").bind(loggedInId).first();
+      const currentUser = await db.prepare("SELECT id FROM users WHERE id = ?").bind(loggedInId).first();
       if (!currentUser) {
         return new Response(JSON.stringify({ error: "Tài khoản không tồn tại hoặc phiên hết hạn." }), { status: 401, headers: corsHeaders });
       }
@@ -199,30 +222,32 @@ export async function onRequest(context) {
           return new Response(JSON.stringify({ error: "Chưa chọn file video để tải lên." }), { status: 400, headers: corsHeaders });
         }
 
-        // Tự động chuẩn hóa link Supabase, loại bỏ /rest/v1 thừa nếu có
-        const cleanBaseUrl = SUPABASE_URL.trim().replace(/\/rest\/v1\/?$/, "").replace(/\/+$/, "");
+        // Đẩy file video sang Telegram Channel
         const ext = videoFile.name ? videoFile.name.split('.').pop() : 'mp4';
-        const fileName = `vid_${Date.now()}.${ext}`;
+        const tgFormData = new FormData();
+        tgFormData.append("chat_id", TELEGRAM_CHAT_ID.trim());
+        tgFormData.append("video", videoFile, `video_${Date.now()}.${ext}`);
+        tgFormData.append("caption", `#VietTube ${title}`);
 
-        const uploadRes = await fetch(`${cleanBaseUrl}/storage/v1/object/videos/${fileName}`, {
+        const tgRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN.trim()}/sendVideo`, {
           method: "POST",
-          headers: {
-            "Authorization": `Bearer ${SUPABASE_KEY.trim()}`,
-            "apikey": SUPABASE_KEY.trim(),
-            "Content-Type": videoFile.type || "video/mp4"
-          },
-          body: videoFile.stream(),
-          duplex: "half"
+          body: tgFormData
         });
 
-        if (!uploadRes.ok) {
-          const errDetail = await uploadRes.text();
-          return new Response(JSON.stringify({ error: `Lỗi Supabase (${uploadRes.status}): ${errDetail}` }), { status: 400, headers: corsHeaders });
+        const tgData = await tgRes.json();
+        if (!tgData.ok) {
+          return new Response(JSON.stringify({ error: `Lỗi Telegram: ${tgData.description}` }), { status: 400, headers: corsHeaders });
         }
 
-        videoUrl = `${cleanBaseUrl}/storage/v1/object/public/videos/${fileName}`;
+        // Lấy File ID từ Telegram để gán vào cổng stream
+        const fileId = tgData.result.video ? tgData.result.video.file_id : (tgData.result.document ? tgData.result.document.file_id : null);
+        if (!fileId) {
+          return new Response(JSON.stringify({ error: "Không lấy được file ID từ Telegram." }), { status: 500, headers: corsHeaders });
+        }
 
-        // Xử lý ảnh thumbnail nếu có
+        videoUrl = `/api/stream/${fileId}`;
+
+        // Xử lý thumbnail nhỏ dạng base64 nếu có
         const thumbFile = formData.get("thumbnail");
         if (thumbFile && typeof thumbFile.arrayBuffer === "function" && thumbFile.size > 0 && thumbFile.size < 500000) {
           const bytes = new Uint8Array(await thumbFile.arrayBuffer());
@@ -239,7 +264,6 @@ export async function onRequest(context) {
       }
 
       const id = "vid_" + Date.now();
-      // Lưu video với đúng ID của người đăng hiện tại
       await db.prepare(`
         INSERT INTO videos (id, user_id, title, description, video_url, thumbnail_url)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -252,7 +276,7 @@ export async function onRequest(context) {
     }
 
     // -------------------------------------------------------------
-    // C. CHI TIẾT, CHỈNH SỬA & XÓA VIDEO
+    // D. CHI TIẾT & XÓA VIDEO
     // -------------------------------------------------------------
     const videoDetailMatch = path.match(/^\/api\/videos\/([^/]+)$/);
     if (videoDetailMatch) {
@@ -283,25 +307,13 @@ export async function onRequest(context) {
 
       if (method === "DELETE") {
         const loggedInId = getUserIdFromCookie(request);
-        const video = await db.prepare("SELECT user_id, video_url FROM videos WHERE id = ?").bind(videoId).first();
+        const video = await db.prepare("SELECT user_id FROM videos WHERE id = ?").bind(videoId).first();
         
         if (!video) {
           return new Response(JSON.stringify({ error: "Không tìm thấy video." }), { status: 404, headers: corsHeaders });
         }
         if (!loggedInId || video.user_id !== loggedInId) {
           return new Response(JSON.stringify({ error: "Bạn không có quyền xóa video này." }), { status: 403, headers: corsHeaders });
-        }
-
-        // Xóa file trên Supabase nếu có
-        if (video.video_url && video.video_url.includes("/storage/v1/object/public/videos/")) {
-          const fileName = video.video_url.split("/videos/").pop();
-          const cleanBaseUrl = SUPABASE_URL.trim().replace(/\/rest\/v1\/?$/, "").replace(/\/+$/, "");
-          try {
-            await fetch(`${cleanBaseUrl}/storage/v1/object/videos/${fileName}`, {
-              method: "DELETE",
-              headers: { "Authorization": `Bearer ${SUPABASE_KEY.trim()}`, "apikey": SUPABASE_KEY.trim() }
-            });
-          } catch (e) {}
         }
 
         await db.prepare("DELETE FROM comments WHERE video_id = ?").bind(videoId).run();
@@ -312,7 +324,7 @@ export async function onRequest(context) {
     }
 
     // -------------------------------------------------------------
-    // D. BÌNH LUẬN & XÓA BÌNH LUẬN (GÁN ĐÚNG NGƯỜI BÌNH LUẬN)
+    // E. BÌNH LUẬN & XÓA BÌNH LUẬN
     // -------------------------------------------------------------
     const commentPostMatch = path.match(/^\/api\/videos\/([^/]+)\/comments$/);
     if (commentPostMatch && method === "POST") {
@@ -351,7 +363,7 @@ export async function onRequest(context) {
     }
 
     // -------------------------------------------------------------
-    // E. TRANG KÊNH CÁ NHÂN
+    // F. KÊNH CÁ NHÂN
     // -------------------------------------------------------------
     const userMatch = path.match(/^\/api\/users\/([^/]+)$/);
     if (userMatch && method === "GET") {
@@ -376,4 +388,4 @@ export async function onRequest(context) {
   } catch (err) {
     return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
   }
-        }
+  }
