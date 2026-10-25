@@ -122,31 +122,53 @@ export async function onRequest(context) {
       return new Response(fFetch.body, { status: fFetch.status, headers: h });
     }
 
-    // 6. Get Video List
+        // 6. Get Video List
     if (path === "/api/videos" && method === "GET") {
       const q = (url.searchParams.get("q") || "").trim();
       const page = Math.max(1, parseInt(url.searchParams.get("page") || "1"));
       const limit = Math.max(1, parseInt(url.searchParams.get("limit") || "6"));
       const offset = (page - 1) * limit;
 
-      let sql = `SELECT v.*, u.display_name AS author_name, u.avatar_url AS author_avatar,
-                 (SELECT COUNT(*) FROM comments WHERE video_id = v.id) AS comment_count
-                 FROM videos v LEFT JOIN users u ON v.user_id = u.id`;
-      let countSql = `SELECT COUNT(*) AS total FROM videos v`;
-      const params = [];
+      let total = 0;
+      let results = [];
 
       if (q) {
-        sql += ` WHERE v.title LIKE ?`;
-        countSql += ` WHERE v.title LIKE ?`;
-        params.push(`%${q}%`);
+        const countRes = await db.prepare("SELECT COUNT(*) AS total FROM videos WHERE title LIKE ?")
+          .bind(`%${q}%`).first();
+        total = countRes?.total || 0;
+
+        const res = await db.prepare(`
+          SELECT v.*, u.display_name AS author_name, u.avatar_url AS author_avatar,
+                 (SELECT COUNT(*) FROM comments WHERE video_id = v.id) AS comment_count
+          FROM videos v LEFT JOIN users u ON v.user_id = u.id
+          WHERE v.title LIKE ?
+          ORDER BY v.created_at DESC LIMIT ? OFFSET ?
+        `).bind(`%${q}%`, limit, offset).all();
+        results = res.results || [];
+      } else {
+        const countRes = await db.prepare("SELECT COUNT(*) AS total FROM videos").first();
+        total = countRes?.total || 0;
+
+        const res = await db.prepare(`
+          SELECT v.*, u.display_name AS author_name, u.avatar_url AS author_avatar,
+                 (SELECT COUNT(*) FROM comments WHERE video_id = v.id) AS comment_count
+          FROM videos v LEFT JOIN users u ON v.user_id = u.id
+          ORDER BY v.created_at DESC LIMIT ? OFFSET ?
+        `).bind(limit, offset).all();
+        results = res.results || [];
       }
-      sql += ` ORDER BY v.created_at DESC LIMIT ? OFFSET ?`;
 
-      const total = (await db.prepare(countSql).bind(...params).first())?.total || 0;
-      const { results = [] } = await db.prepare(sql).bind(...params, limit, offset).all();
-
-      return new Response(JSON.stringify({ videos: results, pagination: { page, limit, total, total_pages: Math.max(1, Math.ceil(total / limit)) } }), { headers: cors });
+      return new Response(JSON.stringify({
+        videos: results,
+        pagination: {
+          page,
+          limit,
+          total,
+          total_pages: Math.max(1, Math.ceil(total / limit))
+        }
+      }), { headers: cors });
     }
+
 
     // 7. Post Video
     if (path === "/api/videos" && method === "POST") {
