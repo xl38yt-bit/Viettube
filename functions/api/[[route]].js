@@ -1,7 +1,7 @@
 // =========================================================================
 // 1. CẤU HÌNH TELEGRAM BOT (ĐIỀN CHÍNH XÁC 2 THÔNG TIN VÀO ĐÂY)
 // =========================================================================
-const TELEGRAM_BOT_TOKEN = "8764219157:AAHUT_OPywzC1V50pWTM9CF6FieZakpzXYo"; // Thay Token của bạn
+const TELEGRAM_BOT_TOKEN = "8764219157:AAHUT_OPywzC1V5opWTM9CF6FieZakpzXYo"; // Thay Token của bạn
 const TELEGRAM_CHAT_ID = "-1004467276375";                            // Thay Chat ID của bạn
 
 // =========================================================================
