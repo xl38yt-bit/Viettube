@@ -127,40 +127,64 @@ export async function onRequest(context) {
       }), { headers: corsHeaders });
     }
 
-    // 5. Đăng video mới (Xử lý cả FormData và JSON)
+    // 5. Đăng video mới lên Supabase Storage
     if (path === "/api/videos" && method === "POST") {
-      const contentType = request.headers.get("content-type") || "";
+      const SUPABASE_URL = "https://oykzzwomigdgkuqezofj.supabase.co/rest/v1/"; // Thay URL Supabase của bạn vào đây
+      const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im95a3p6d29taWdkZ2t1cWV6b2ZqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI5MjM1NzYsImV4cCI6MjEwODQ5OTU3Nn0.VYMUaL6_5Oc25_goptWvVKIron-9KxEs4XIKzt7WHvE";               // Thay anon key của bạn vào đây
+
       let title = "";
       let description = "";
-      let videoUrl = "https://upload.wikimedia.org/wikipedia/commons/transcoded/c/c0/Big_Buck_Bunny_4K.webm/Big_Buck_Bunny_4K.webm.480p.vp9.webm";
+      let videoUrl = "https://vjs.zencdn.net/v/oceans.mp4";
       let thumbnailUrl = "";
+
+      const contentType = request.headers.get("content-type") || "";
 
       if (contentType.includes("multipart/form-data")) {
         const formData = await request.formData();
         title = (formData.get("title") || "").trim();
         description = (formData.get("description") || "").trim();
 
-        // Xử lý thumbnail nhỏ dạng base64 nếu có
-        const thumbFile = formData.get("thumbnail");
-        if (thumbFile && typeof thumbFile.arrayBuffer === "function" && thumbFile.size > 0 && thumbFile.size < 500000) {
-          const bytes = new Uint8Array(await thumbFile.arrayBuffer());
-          let binary = "";
-          for (let i = 0; i < bytes.byteLength; i++) {
-            binary += String.fromCharCode(bytes[i]);
+        const videoFile = formData.get("video");
+        if (videoFile && typeof videoFile.arrayBuffer === "function" && videoFile.size > 0) {
+          const fileName = `vid_${Date.now()}.mp4`;
+
+          // Gửi file video trực tiếp sang kho Supabase Storage
+          const uploadRes = await fetch(`${SUPABASE_URL}/storage/v1/object/videos/${fileName}`, {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${SUPABASE_KEY}`,
+              "apikey": SUPABASE_KEY,
+              "Content-Type": videoFile.type || "video/mp4"
+            },
+            body: await videoFile.arrayBuffer()
+          });
+
+          if (uploadRes.ok) {
+            // Lấy link xem trực tiếp từ Supabase
+            videoUrl = `${SUPABASE_URL}/storage/v1/object/public/videos/${fileName}`;
           }
-          thumbnailUrl = `data:${thumbFile.type || 'image/jpeg'};base64,${btoa(binary)}`;
         }
-      } else {
-        const body = await request.json();
-        title = (body.title || "").trim();
-        description = (body.description || "").trim();
-        if (body.video_url) videoUrl = body.video_url;
-        if (body.thumbnail_url) thumbnailUrl = body.thumbnail_url;
       }
 
       if (!title) {
         return new Response(JSON.stringify({ error: "Tiêu đề video là bắt buộc." }), { status: 400, headers: corsHeaders });
       }
+
+      let user = await db.prepare("SELECT id FROM users LIMIT 1").first();
+      const userId = user ? user.id : "u_minh_anh_01";
+      const id = "vid_" + Date.now();
+
+      await db.prepare(`
+        INSERT INTO videos (id, user_id, title, description, video_url, thumbnail_url)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).bind(id, userId, title, description, videoUrl, thumbnailUrl).run();
+
+      return new Response(JSON.stringify({ 
+        success: true, 
+        video: { id, user_id: userId, title, description, video_url: videoUrl, thumbnail_url: thumbnailUrl } 
+      }), { headers: corsHeaders });
+    }
+
 
       // Lấy 1 tài khoản có sẵn trong DB để liên kết khoá ngoại (tránh lỗi FOREIGN KEY)
       let user = await db.prepare("SELECT id FROM users LIMIT 1").first();
