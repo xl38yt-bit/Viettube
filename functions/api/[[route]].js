@@ -1,7 +1,7 @@
 // =========================================================================
 // 1. CẤU HÌNH THÔNG TIN SUPABASE CỦA BẠN (ĐIỀN CHÍNH XÁC VÀO 2 DÒNG NÀY)
 // =========================================================================
-const SUPABASE_URL = "https://oykzzwomigdgkuqezofj.supabase.co/rest/v1/"; // Thay URL dự án Supabase của bạn
+const SUPABASE_URL = "https://oykzzwomigdgkuqezofj.supabase.co"; // Thay URL dự án Supabase của bạn
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im95a3p6d29taWdkZ2t1cWV6b2ZqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI5MjM1NzYsImV4cCI6MjEwODQ5OTU3Nn0.VYMUaL6_5Oc25_goptWvVKIron-9KxEs4XIKzt7WHvE";               // Thay mã anon public key của bạn
 
 // =========================================================================
