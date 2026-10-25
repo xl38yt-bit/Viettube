@@ -174,23 +174,60 @@ export async function onRequest(context) {
       const userId = user ? user.id : "u_minh_anh_01";
       const id = "vid_" + Date.now();
 
-      await db.prepare(`
-        INSERT INTO videos (id, user_id, title, description, video_url, thumbnail_url)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).bind(id, userId, title, description, videoUrl, thumbnailUrl).run();
+      await db.prepare(`    // 5. Đăng video mới lên Supabase Storage
+    if (path === "/api/videos" && method === "POST") {
+      // HÃY ĐIỀN CHÍNH XÁC 2 THÔNG TIN BẠN VỪA LẤY Ở BƯỚC TRƯỚC VÀO ĐÂY:
+      const SUPABASE_URL = "https://xxxxxxxxxxxxxxxxxxxx.supabase.co"; // Thay bằng Project URL của bạn
+      const SUPABASE_KEY = "eyJhbGciOi...";                           // Thay bằng mã anon public key của bạn
 
-      return new Response(JSON.stringify({ 
-        success: true, 
-        video: { id, user_id: userId, title, description, video_url: videoUrl, thumbnail_url: thumbnailUrl } 
-      }), { headers: corsHeaders });
-    }
+      let title = "";
+      let description = "";
+      let videoUrl = "";
+      let thumbnailUrl = "";
 
+      const contentType = request.headers.get("content-type") || "";
 
-      // Lấy 1 tài khoản có sẵn trong DB để liên kết khoá ngoại (tránh lỗi FOREIGN KEY)
+      if (contentType.includes("multipart/form-data")) {
+        const formData = await request.formData();
+        title = (formData.get("title") || "").trim();
+        description = (formData.get("description") || "").trim();
+
+        const videoFile = formData.get("video");
+        if (videoFile && typeof videoFile.arrayBuffer === "function" && videoFile.size > 0) {
+          const fileName = `vid_${Date.now()}.mp4`;
+
+          // Gửi file video trực tiếp sang Supabase Storage
+          const uploadRes = await fetch(`${SUPABASE_URL}/storage/v1/object/videos/${fileName}`, {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${SUPABASE_KEY}`,
+              "apikey": SUPABASE_KEY,
+              "Content-Type": videoFile.type || "video/mp4"
+            },
+            body: await videoFile.arrayBuffer()
+          });
+
+          if (!uploadRes.ok) {
+            const errDetail = await uploadRes.text();
+            return new Response(JSON.stringify({ error: `Lỗi tải lên Supabase: ${errDetail}` }), { status: 400, headers: corsHeaders });
+          }
+
+          // Tạo link phát video công khai từ Supabase
+          videoUrl = `${SUPABASE_URL}/storage/v1/object/public/videos/${fileName}`;
+        }
+      }
+
+      if (!title) {
+        return new Response(JSON.stringify({ error: "Tiêu đề video là bắt buộc." }), { status: 400, headers: corsHeaders });
+      }
+      if (!videoUrl) {
+        return new Response(JSON.stringify({ error: "Chưa có file video nào được tải lên." }), { status: 400, headers: corsHeaders });
+      }
+
       let user = await db.prepare("SELECT id FROM users LIMIT 1").first();
       const userId = user ? user.id : "u_minh_anh_01";
-
       const id = "vid_" + Date.now();
+
       await db.prepare(`
         INSERT INTO videos (id, user_id, title, description, video_url, thumbnail_url)
         VALUES (?, ?, ?, ?, ?, ?)
