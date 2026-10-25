@@ -1,8 +1,8 @@
 // =========================================================================
-// 1. CẤU HÌNH TELEGRAM BOT (ĐIỀN CHÍNH XÁC 2 THÔNG TIN VÀO ĐÂY)
+// 1. CẤU HÌNH TELEGRAM BOT (ĐIỀN TOKEN VÀ CHAT ID CỦA BẠN VÀO ĐÂY)
 // =========================================================================
-const TELEGRAM_BOT_TOKEN = "8764219157:AAHUT_OPywzC1V5opWTM9CF6FieZakpzXYo"; // Thay Token của bạn
-const TELEGRAM_CHAT_ID = "-1004467276375";                            // Thay Chat ID của bạn
+const TELEGRAM_BOT_TOKEN = "8764219157:AAHUT_OPywzC1V5opWTM9CF6FieZakpzXYo"; // Token bot của bạn
+const TELEGRAM_CHAT_ID = "-1004467276375";                            // Chat ID kênh của bạn
 
 // =========================================================================
 // 2. CÁC HÀM TIỆN ÍCH HỆ THỐNG
@@ -18,6 +18,29 @@ function getUserIdFromCookie(request) {
   const cookieHeader = request.headers.get("Cookie") || "";
   const match = cookieHeader.match(/viettube_session=([^;]+)/);
   return match ? decodeURIComponent(match[1].trim()) : null;
+}
+
+// Hàm đẩy file (video hoặc ảnh) lên Telegram và lấy File ID
+async function uploadToTelegram(file, caption = "") {
+  const ext = file.name ? file.name.split('.').pop() : 'bin';
+  const tgFormData = new FormData();
+  tgFormData.append("chat_id", TELEGRAM_CHAT_ID.trim());
+  tgFormData.append("document", file, `file_${Date.now()}.${ext}`);
+  if (caption) tgFormData.append("caption", caption);
+
+  const tgRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN.trim()}/sendDocument`, {
+    method: "POST",
+    body: tgFormData
+  });
+
+  const tgData = await tgRes.json();
+  if (!tgData.ok) {
+    throw new Error(`Lỗi Telegram (${tgData.error_code}): ${tgData.description}`);
+  }
+
+  const fileId = tgData.result.document ? tgData.result.document.file_id : (tgData.result.video ? tgData.result.video.file_id : null);
+  if (!fileId) throw new Error("Không lấy được File ID từ Telegram.");
+  return `/api/stream/${fileId}`;
 }
 
 const DEFAULT_AVATAR = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjAgMTIwIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEyMCI+CiAgPGRlZnM+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9ImF2IiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iI2VmNDQ0NCIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiNlYzQ4OTkiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgPC9kZWZzPgogIDxyZWN0IHdpZHRoPSIxMjAiIGhlaWdodD0iMTIwIiByeD0iNjAiIGZpbGw9InVybCgjYXYpIi8+CiAgPGNpcmNsZSBjeD0iNjAiIGN5PSI0NCIgcj0iMjAiIGZpbGw9IiNmZmZmZmYiIG9wYWNpdHk9IjAuOTUiLz4KICA8cGF0aCBkPSJNMjYgMTAyIEMyNiA3OCA5NCA3OCA5NCAxMDIiIGZpbGw9IiNmZmZmZmYiIG9wYWNpdHk9IjAuOTUiLz4KPC9zdmc+";
@@ -42,7 +65,7 @@ export async function onRequest(context) {
 
   try {
     // -------------------------------------------------------------
-    // A. XÁC THỰC TÀI KHOẢN & LƯU PHIÊN ĐĂNG NHẬP (COOKIE)
+    // A. XÁC THỰC TÀI KHOẢN & PHIÊN ĐĂNG NHẬP
     // -------------------------------------------------------------
     if (path === "/api/auth/me" && method === "GET") {
       const loggedInId = getUserIdFromCookie(request);
@@ -52,7 +75,7 @@ export async function onRequest(context) {
       }
       return new Response(JSON.stringify({ 
         user: user || null, 
-        config: { max_video_size_mb: 50, max_image_size_mb: 5 } 
+        config: { max_video_size_mb: 50, max_image_size_mb: 10 } 
       }), { headers: corsHeaders });
     }
 
@@ -120,41 +143,51 @@ export async function onRequest(context) {
     }
 
     // -------------------------------------------------------------
-    // B. VIDEO STREAM PROXY (KÉO VIDEO TỪ TELEGRAM VỀ TRÌNH PHÁT)
+    // B. STREAM PROXY CHO CẢ VIDEO LẪN HÌNH ẢNH (TỰ ĐỘNG NHẬN DIỆN MIME)
     // -------------------------------------------------------------
     const streamMatch = path.match(/^\/api\/stream\/([^/]+)$/);
     if (streamMatch && method === "GET") {
       const fileId = streamMatch[1];
       
-      // 1. Hỏi Telegram đường dẫn file
-      const getFileRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getFile?file_id=${fileId}`);
+      const getFileRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN.trim()}/getFile?file_id=${fileId}`);
       const fileData = await getFileRes.json();
       
       if (!fileData.ok) {
-        return new Response("Không tìm thấy file trên máy chủ Telegram.", { status: 404 });
+        return new Response("Không tìm thấy tệp trên Telegram.", { status: 404 });
       }
 
       const filePath = fileData.result.file_path;
-      const downloadUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${filePath}`;
+      const downloadUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN.trim()}/${filePath}`;
 
-      // 2. Kéo luồng stream về và hỗ trợ Range (tua video)
       const range = request.headers.get("range");
-      const videoFetch = await fetch(downloadUrl, {
+      const tgFileFetch = await fetch(downloadUrl, {
         headers: range ? { "Range": range } : {}
       });
 
-      const responseHeaders = new Headers(videoFetch.headers);
+      const responseHeaders = new Headers(tgFileFetch.headers);
       responseHeaders.set("Access-Control-Allow-Origin", "*");
-      responseHeaders.set("Content-Type", "video/mp4");
 
-      return new Response(videoFetch.body, {
-        status: videoFetch.status,
+      // Nhận diện định dạng tệp: Nếu là ảnh thì trả về mime ảnh, ngược lại là video
+      if (filePath.match(/\.(jpg|jpeg)$/i)) {
+        responseHeaders.set("Content-Type", "image/jpeg");
+      } else if (filePath.match(/\.png$/i)) {
+        responseHeaders.set("Content-Type", "image/png");
+      } else if (filePath.match(/\.webp$/i)) {
+        responseHeaders.set("Content-Type", "image/webp");
+      } else if (filePath.match(/\.gif$/i)) {
+        responseHeaders.set("Content-Type", "image/gif");
+      } else {
+        responseHeaders.set("Content-Type", "video/mp4");
+      }
+
+      return new Response(tgFileFetch.body, {
+        status: tgFileFetch.status,
         headers: responseHeaders
       });
     }
 
     // -------------------------------------------------------------
-    // C. VIDEO: LẤY DANH SÁCH & ĐĂNG MỚI (LƯU VÀO TELEGRAM)
+    // C. VIDEO: LẤY DANH SÁCH & ĐĂNG MỚI (CÓ XỬ LÝ THUMBNAIL)
     // -------------------------------------------------------------
     if (path === "/api/videos" && method === "GET") {
       const q = (url.searchParams.get("q") || "").trim();
@@ -202,65 +235,29 @@ export async function onRequest(context) {
 
       const currentUser = await db.prepare("SELECT id FROM users WHERE id = ?").bind(loggedInId).first();
       if (!currentUser) {
-        return new Response(JSON.stringify({ error: "Tài khoản không tồn tại hoặc phiên hết hạn." }), { status: 401, headers: corsHeaders });
+        return new Response(JSON.stringify({ error: "Phiên đăng nhập hết hạn." }), { status: 401, headers: corsHeaders });
       }
 
-      let title = "";
-      let description = "";
-      let videoUrl = "";
-      let thumbnailUrl = "";
-
-      const contentType = request.headers.get("content-type") || "";
-
-      if (contentType.includes("multipart/form-data")) {
-        const formData = await request.formData();
-        title = (formData.get("title") || "").trim();
-        description = (formData.get("description") || "").trim();
-
-        const videoFile = formData.get("video");
-        if (!videoFile || videoFile.size === 0) {
-          return new Response(JSON.stringify({ error: "Chưa chọn file video để tải lên." }), { status: 400, headers: corsHeaders });
-        }
-
-        // Đẩy file video sang Telegram Channel
-        const ext = videoFile.name ? videoFile.name.split('.').pop() : 'mp4';
-        const tgFormData = new FormData();
-        tgFormData.append("chat_id", TELEGRAM_CHAT_ID.trim());
-        tgFormData.append("video", videoFile, `video_${Date.now()}.${ext}`);
-        tgFormData.append("caption", `#VietTube ${title}`);
-
-        const tgRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN.trim()}/sendVideo`, {
-          method: "POST",
-          body: tgFormData
-        });
-
-        const tgData = await tgRes.json();
-        if (!tgData.ok) {
-          return new Response(JSON.stringify({ error: `Lỗi Telegram: ${tgData.description}` }), { status: 400, headers: corsHeaders });
-        }
-
-        // Lấy File ID từ Telegram để gán vào cổng stream
-        const fileId = tgData.result.video ? tgData.result.video.file_id : (tgData.result.document ? tgData.result.document.file_id : null);
-        if (!fileId) {
-          return new Response(JSON.stringify({ error: "Không lấy được file ID từ Telegram." }), { status: 500, headers: corsHeaders });
-        }
-
-        videoUrl = `/api/stream/${fileId}`;
-
-        // Xử lý thumbnail nhỏ dạng base64 nếu có
-        const thumbFile = formData.get("thumbnail");
-        if (thumbFile && typeof thumbFile.arrayBuffer === "function" && thumbFile.size > 0 && thumbFile.size < 500000) {
-          const bytes = new Uint8Array(await thumbFile.arrayBuffer());
-          let binary = "";
-          for (let i = 0; i < bytes.byteLength; i++) {
-            binary += String.fromCharCode(bytes[i]);
-          }
-          thumbnailUrl = `data:${thumbFile.type || 'image/jpeg'};base64,${btoa(binary)}`;
-        }
-      }
+      const formData = await request.formData();
+      const title = (formData.get("title") || "").trim();
+      const description = (formData.get("description") || "").trim();
+      const videoFile = formData.get("video");
+      const thumbFile = formData.get("thumbnail");
 
       if (!title) {
         return new Response(JSON.stringify({ error: "Tiêu đề video là bắt buộc." }), { status: 400, headers: corsHeaders });
+      }
+      if (!videoFile || videoFile.size === 0) {
+        return new Response(JSON.stringify({ error: "Vui lòng chọn file video." }), { status: 400, headers: corsHeaders });
+      }
+
+      // 1. Tải video lên Telegram
+      const videoUrl = await uploadToTelegram(videoFile, `#VietTube_Video: ${title}`);
+
+      // 2. Tải Thumbnail riêng lên Telegram (nếu người dùng có chọn)
+      let thumbnailUrl = "";
+      if (thumbFile && thumbFile.size > 0) {
+        thumbnailUrl = await uploadToTelegram(thumbFile, `#VietTube_Thumb: ${title}`);
       }
 
       const id = "vid_" + Date.now();
@@ -276,7 +273,7 @@ export async function onRequest(context) {
     }
 
     // -------------------------------------------------------------
-    // D. CHI TIẾT & XÓA VIDEO
+    // D. CHI TIẾT, CHỈNH SỬA & XÓA VIDEO
     // -------------------------------------------------------------
     const videoDetailMatch = path.match(/^\/api\/videos\/([^/]+)$/);
     if (videoDetailMatch) {
@@ -305,6 +302,31 @@ export async function onRequest(context) {
         return new Response(JSON.stringify({ video, comments: comments || [] }), { headers: corsHeaders });
       }
 
+      // Sửa video (hỗ trợ đổi cả ảnh Thumbnail mới)
+      if (method === "PUT") {
+        const loggedInId = getUserIdFromCookie(request);
+        const video = await db.prepare("SELECT user_id FROM videos WHERE id = ?").bind(videoId).first();
+        if (!video || !loggedInId || video.user_id !== loggedInId) {
+          return new Response(JSON.stringify({ error: "Không có quyền sửa video này." }), { status: 403, headers: corsHeaders });
+        }
+
+        const formData = await request.formData();
+        const title = (formData.get("title") || "").trim();
+        const description = (formData.get("description") || "").trim();
+        const thumbFile = formData.get("thumbnail");
+
+        if (thumbFile && thumbFile.size > 0) {
+          const newThumbUrl = await uploadToTelegram(thumbFile, `#VietTube_ThumbEdit`);
+          await db.prepare(`UPDATE videos SET title = ?, description = ?, thumbnail_url = ? WHERE id = ?`)
+            .bind(title, description, newThumbUrl, videoId).run();
+        } else {
+          await db.prepare(`UPDATE videos SET title = ?, description = ? WHERE id = ?`)
+            .bind(title, description, videoId).run();
+        }
+
+        return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
+      }
+
       if (method === "DELETE") {
         const loggedInId = getUserIdFromCookie(request);
         const video = await db.prepare("SELECT user_id FROM videos WHERE id = ?").bind(videoId).first();
@@ -316,76 +338,5 @@ export async function onRequest(context) {
           return new Response(JSON.stringify({ error: "Bạn không có quyền xóa video này." }), { status: 403, headers: corsHeaders });
         }
 
-        await db.prepare("DELETE FROM comments WHERE video_id = ?").bind(videoId).run();
-        await db.prepare("DELETE FROM videos WHERE id = ?").bind(videoId).run();
-
-        return new Response(JSON.stringify({ success: true, message: "Đã xóa video thành công." }), { headers: corsHeaders });
-      }
-    }
-
-    // -------------------------------------------------------------
-    // E. BÌNH LUẬN & XÓA BÌNH LUẬN
-    // -------------------------------------------------------------
-    const commentPostMatch = path.match(/^\/api\/videos\/([^/]+)\/comments$/);
-    if (commentPostMatch && method === "POST") {
-      const loggedInId = getUserIdFromCookie(request);
-      if (!loggedInId) {
-        return new Response(JSON.stringify({ error: "Bạn cần đăng nhập để bình luận." }), { status: 401, headers: corsHeaders });
-      }
-
-      const videoId = commentPostMatch[1];
-      const body = await request.json();
-      const id = "cmt_" + Date.now();
-
-      await db.prepare(`
-        INSERT INTO comments (id, video_id, user_id, content)
-        VALUES (?, ?, ?, ?)
-      `).bind(id, videoId, loggedInId, body.content || "").run();
-
-      return new Response(JSON.stringify({ success: true, id }), { headers: corsHeaders });
-    }
-
-    const commentDeleteMatch = path.match(/^\/api\/comments\/([^/]+)$/);
-    if (commentDeleteMatch && method === "DELETE") {
-      const loggedInId = getUserIdFromCookie(request);
-      const commentId = commentDeleteMatch[1];
-      const c = await db.prepare("SELECT user_id FROM comments WHERE id = ?").bind(commentId).first();
-      
-      if (!c) {
-        return new Response(JSON.stringify({ error: "Không tìm thấy bình luận." }), { status: 404, headers: corsHeaders });
-      }
-      if (!loggedInId || c.user_id !== loggedInId) {
-        return new Response(JSON.stringify({ error: "Bạn không có quyền xóa bình luận này." }), { status: 403, headers: corsHeaders });
-      }
-
-      await db.prepare("DELETE FROM comments WHERE id = ?").bind(commentId).run();
-      return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
-    }
-
-    // -------------------------------------------------------------
-    // F. KÊNH CÁ NHÂN
-    // -------------------------------------------------------------
-    const userMatch = path.match(/^\/api\/users\/([^/]+)$/);
-    if (userMatch && method === "GET") {
-      const userId = userMatch[1];
-      const profile = await db.prepare("SELECT id, email, display_name, avatar_url, created_at FROM users WHERE id = ?").bind(userId).first();
-      if (!profile) {
-        return new Response(JSON.stringify({ error: "Không tìm thấy kênh người dùng." }), { status: 404, headers: corsHeaders });
-      }
-
-      const { results: videos } = await db.prepare(`
-        SELECT v.*, ? AS author_name, ? AS author_avatar,
-               (SELECT COUNT(*) FROM comments WHERE video_id = v.id) AS comment_count
-        FROM videos v
-        WHERE v.user_id = ?
-        ORDER BY v.created_at DESC
-      `).bind(profile.display_name, profile.avatar_url || DEFAULT_AVATAR, userId).all();
-
-      return new Response(JSON.stringify({ profile, videos: videos || [] }), { headers: corsHeaders });
-    }
-
-    return new Response(JSON.stringify({ message: "VietTube API Ready" }), { headers: corsHeaders });
-  } catch (err) {
-    return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
-  }
-  }
+        await db.
+          
