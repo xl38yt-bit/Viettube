@@ -132,7 +132,7 @@ export async function onRequest(context) {
       const contentType = request.headers.get("content-type") || "";
       let title = "";
       let description = "";
-      let videoUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4";
+      let videoUrl = "https://upload.wikimedia.org/wikipedia/commons/transcoded/c/c0/Big_Buck_Bunny_4K.webm/Big_Buck_Bunny_4K.webm.480p.vp9.webm";
       let thumbnailUrl = "";
 
       if (contentType.includes("multipart/form-data")) {
